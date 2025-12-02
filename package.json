@@ -1,0 +1,15 @@
+{
+  "name": "ncaa-dynasty-bot",
+  "version": "1.0.0",
+  "main": "dist/bot.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/bot.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}
