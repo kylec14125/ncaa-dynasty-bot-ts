@@ -6,6 +6,8 @@ import {
   SlashCommandBuilder,
   ChatInputCommandInteraction,
   Attachment,
+  EmbedBuilder,
+  ColorResolvable,
 } from "discord.js";
 
 // ---------- TYPES ----------
@@ -37,6 +39,7 @@ interface RecruitEntry {
 const teams: Record<string, TeamStats> = {};
 const rivalry: RivalryRecord = { akronWins: 0, kentWins: 0 };
 const recruits: RecruitEntry[] = [];
+const streaks: Record<string, number> = {}; // positive = win streak, negative = losing streak
 
 // ---------- HELPERS ----------
 
@@ -45,6 +48,38 @@ function normalizeTeam(name: string): string {
   if (["akron", "zips"].includes(n)) return "Akron";
   if (["kent", "kent state", "golden flashes"].includes(n)) return "Kent State";
   return name.trim().replace(/\s+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function getTeamColor(team: string): ColorResolvable {
+  const t = normalizeTeam(team);
+  if (t === "Akron") return "#003366"; // dark blue
+  if (t === "Kent State") return "#FFCC00"; // gold
+  return "#888888"; // neutral gray for CPUs
+}
+
+function getTeamLogo(team: string): string | null {
+  const t = normalizeTeam(team);
+  // You can swap these URLs for any logo images you like
+  if (t === "Akron") {
+    return "https://upload.wikimedia.org/wikipedia/en/2/26/Akron_Zips_logo.svg";
+  }
+  if (t === "Kent State") {
+    return "https://upload.wikimedia.org/wikipedia/en/4/4f/Kent_State_Golden_Flashes_logo.svg";
+  }
+  return null;
+}
+
+function updateStreaks(winner: string, loser: string) {
+  const wPrev = streaks[winner] ?? 0;
+  const lPrev = streaks[loser] ?? 0;
+
+  // winner streak
+  if (wPrev >= 0) streaks[winner] = wPrev + 1;
+  else streaks[winner] = 1;
+
+  // loser streak
+  if (lPrev <= 0) streaks[loser] = lPrev - 1;
+  else streaks[loser] = -1;
 }
 
 function updateStandings(winner: string, loser: string, wScore: number, lScore: number) {
@@ -68,6 +103,8 @@ function updateStandings(winner: string, loser: string, wScore: number, lScore: 
 
   teams[winner].wins += 1;
   teams[loser].losses += 1;
+
+  updateStreaks(winner, loser);
 }
 
 function updateRivalry(winner: string, loser: string) {
@@ -79,47 +116,105 @@ function updateRivalry(winner: string, loser: string) {
   }
 }
 
-function makeRecap(winner: string, loser: string, wScore: number, lScore: number): string {
+function classifyGame(
+  winner: string,
+  loser: string,
+  wScore: number,
+  lScore: number,
+  prevWinner?: TeamStats,
+  prevLoser?: TeamStats,
+): string {
   const margin = wScore - lScore;
-  const lines: string[] = [];
 
-  if (margin <= 3) {
-    lines.push("Absolute nail-biter. Someone’s controller has bite marks. 🧊");
-  } else if (margin <= 10) {
-    lines.push("Solid win with just enough drama to talk trash all week. 📈");
+  const winnerNorm = normalizeTeam(winner);
+  const loserNorm = normalizeTeam(loser);
+  const isHumanRivalry =
+    [winnerNorm, loserNorm].includes("Akron") && [winnerNorm, loserNorm].includes("Kent State");
+
+  let label: string;
+
+  if (margin >= 21) {
+    label = "Blowout";
+  } else if (margin <= 3) {
+    label = "Classic";
   } else {
-    lines.push("That was a beatdown. Booster club is *concerned*. 💀");
+    label = "Solid Win";
   }
 
-  const wNorm = normalizeTeam(winner);
-  const lNorm = normalizeTeam(loser);
-
-  if (
-    new Set([wNorm, lNorm]).size === 2 &&
-    [wNorm, lNorm].includes("Akron") &&
-    [wNorm, lNorm].includes("Kent State")
-  ) {
-    if (wNorm === "Akron") {
-      lines.push("Akron keeps the Wagon Wheel and Kent fans keep the excuses. 🔵");
-    } else {
-      lines.push("Kent State steals the Wagon Wheel – Akron boosters are on the phone. 💛");
-    }
-  } else {
-    const extra = [
-      "Momentum firmly on their side heading into next week.",
-      "Rumors say extra wind sprints are coming for the losers. 🏃‍♂️",
-      "Film room tomorrow is going to be *awkward* for somebody.",
-    ];
-    lines.push(extra[Math.floor(Math.random() * extra.length)]);
+  // Upset detection: loser had more wins before this game
+  if (prevWinner && prevLoser && prevLoser.wins > prevWinner.wins && margin >= 7) {
+    label = "Upset";
   }
 
-  return `**FINAL SCORE**\n> **${winner} ${wScore} – ${loser} ${lScore}**\n\n${lines.join(" ")}`;
+  if (isHumanRivalry && margin >= 17) {
+    label = "Rivalry Beatdown";
+  }
+
+  return label;
 }
 
-function formatStandings(): string {
+function makeSavageSubtitle(
+  gameType: string,
+  winner: string,
+  loser: string,
+  wScore: number,
+  lScore: number,
+): string {
+  const margin = wScore - lScore;
+  const wNorm = normalizeTeam(winner);
+  const lNorm = normalizeTeam(loser);
+  const rivalryGame =
+    [wNorm, lNorm].includes("Akron") && [wNorm, lNorm].includes("Kent State");
+
+  const akronWin = wNorm === "Akron";
+  const kentWin = wNorm === "Kent State";
+
+  if (rivalryGame) {
+    if (akronWin) {
+      if (margin >= 21) {
+        return "Akron just beat the absolute shit out of Kent. Booster club is partying; Kent fans are coping. 💀";
+      }
+      if (margin <= 3) {
+        return "Akron survives a sweaty-ass rivalry game. Nick’s controller might be in pieces. 🧊";
+      }
+      return "Akron owns the Wagon Wheel again. Nick is on full excuse tour. 🔵";
+    } else if (kentWin) {
+      if (margin >= 21) {
+        return "Kent State dragged Akron up and down the field. Kyle’s headset is under review. 💛";
+      }
+      if (margin <= 3) {
+        return "Kent State sneaks out a rivalry win. Akron boosters are sending angry emails. ⚡";
+      }
+      return "Kent State actually showed up. Akron’s ‘dynasty’ is on fraud watch. 👀";
+    }
+  }
+
+  switch (gameType) {
+    case "Blowout":
+      return `${winner} turned ${loser} into NPCs. That was a straight-up ass kicking.`;
+    case "Classic":
+      return `Instant classic. One of you clutched up, the other one is sick to their stomach.`;
+    case "Upset":
+      return `${winner} just ruined ${loser}'s season. That’s a ‘throw the controller’ type L.`;
+    case "Rivalry Beatdown":
+      return `That rivalry game wasn’t even close. Someone’s getting roasted in chat for days.`;
+    default:
+      if (margin >= 10) {
+        return `${winner} controlled that shit. ${loser} never really had a shot.`;
+      }
+      return `${winner} did just enough. ${loser} will pretend it was ‘closer than the score’.`;
+  }
+}
+
+function formatStandingsEmbed(): EmbedBuilder {
   const entries = Object.entries(teams);
+  const embed = new EmbedBuilder().setTitle("Dynasty Standings").setColor("#1E88E5");
+
   if (entries.length === 0) {
-    return "No games reported yet. Use `/final` after a game to get things started.";
+    embed.setDescription(
+      "No games reported yet. Use `/final` after a game to get things started.",
+    );
+    return embed;
   }
 
   const sorted = entries.sort(([, a], [, b]) => {
@@ -129,18 +224,51 @@ function formatStandings(): string {
     return diffB - diffA;
   });
 
-  const out: string[] = ["**DYNASTY STANDINGS**"];
   let rank = 1;
   for (const [name, data] of sorted) {
     const diff = data.pointsFor - data.pointsAgainst;
     const diffStr = diff >= 0 ? `+${diff}` : `${diff}`;
-    out.push(
-      `\`#${rank}\` **${name}** — ${data.wins}-${data.losses} ` +
-        `(PF: ${data.pointsFor}, PA: ${data.pointsAgainst}, DIFF: ${diffStr})`,
-    );
+    const streakVal = streaks[name] ?? 0;
+    let streakText = "—";
+    if (streakVal > 0) streakText = `W${streakVal}`;
+    if (streakVal < 0) streakText = `L${Math.abs(streakVal)}`;
+
+    embed.addFields({
+      name: `#${rank} ${name}`,
+      value: `Record: **${data.wins}-${data.losses}**  |  PF: **${data.pointsFor}**  PA: **${data.pointsAgainst}**  |  Streak: **${streakText}**  |  Diff: **${diffStr}**`,
+    });
     rank += 1;
   }
-  return out.join("\n");
+
+  return embed;
+}
+
+function formatStreaksEmbed(): EmbedBuilder {
+  const entries = Object.entries(streaks).filter(([, v]) => v !== 0);
+  const embed = new EmbedBuilder().setTitle("Current Streaks").setColor("#8E24AA");
+
+  if (entries.length === 0) {
+    embed.setDescription(
+      "No active streaks yet. Somebody start stacking wins… or keep being hilariously bad.",
+    );
+    return embed;
+  }
+
+  for (const [team, value] of entries) {
+    if (value > 0) {
+      embed.addFields({
+        name: team,
+        value: `🔥 **${value}-game win streak**`,
+      });
+    } else {
+      embed.addFields({
+        name: team,
+        value: `💀 **${Math.abs(value)}-game losing streak**`,
+      });
+    }
+  }
+
+  return embed;
 }
 
 // ---------- DISCORD CLIENT ----------
@@ -213,6 +341,10 @@ const slashCommands = [
           { name: "lost", value: "lost" },
         ),
     ),
+
+  new SlashCommandBuilder()
+    .setName("streaks")
+    .setDescription("Show current win/loss streaks"),
 ].map((cmd) => cmd.toJSON());
 
 // ---------- READY / REGISTER COMMANDS ----------
@@ -223,11 +355,15 @@ client.once(Events.ClientReady, async (c) => {
   console.log("Slash commands registered.");
 });
 
-// ---------- MESSAGE REACTIONS (LIFE-LIKE CHAT) ----------
+// ---------- MESSAGE REACTIONS (SAVAGE CHAT) ----------
 
 client.on(Events.MessageCreate, async (msg) => {
   if (msg.author.bot) return;
   const content = msg.content.toLowerCase();
+
+  const mentionsKent =
+    content.includes("kent") || content.includes("kent state") || content.includes("golden flashes");
+  const mentionsAkron = content.includes("akron") || content.includes("zips");
 
   // Images / highlights
   if (msg.attachments.size > 0) {
@@ -238,10 +374,10 @@ client.on(Events.MessageCreate, async (msg) => {
     );
     if (hasImage) {
       const lines = [
-        "📸 Highlight submitted to the selection committee.",
-        "Screenshot secured. Film room will review this play. 🎥",
-        "That looks like either greatness or pain. Either way, I approve. 😎",
-        "Evidence has been logged. This will be used in future trash talk.",
+        "📸 Highlight saved. This WILL be used against someone later.",
+        "Screenshot secured. Film room is gonna feast on this.",
+        "That looks like either greatness or pure pain. Either way, I respect it. 😈",
+        "Evidence logged. Trash talk fuel acquired.",
       ];
       await msg.reply(lines[Math.floor(Math.random() * lines.length)]);
       return;
@@ -251,10 +387,10 @@ client.on(Events.MessageCreate, async (msg) => {
   // You win
   if (["i won", "we won", "got the dub", "big win", "huge dub"].some((p) => content.includes(p))) {
     const lines = [
-      "Locker room vibes: immaculate. 🏆",
-      "Coaches call it execution. Twitter calls it a **statement**.",
-      "That’s a program-building W right there. 📈",
-      "Committee took notes. Respect earned.",
+      "Big f***ing dub. 🏆",
+      "That’s how you shut everybody up. Statement win.",
+      "That’s a franchise W. Schedule the parade.",
+      "Dynasty stock: **way** up after that one. 📈",
     ];
     await msg.reply(lines[Math.floor(Math.random() * lines.length)]);
     return;
@@ -267,10 +403,10 @@ client.on(Events.MessageCreate, async (msg) => {
     )
   ) {
     const lines = [
-      "Tough one. Film doesn’t lie, but bounce-backs do happen. 💪",
-      "Every great dynasty has a ‘what happened there?’ week.",
-      "Rumor: extra conditioning is on tomorrow’s schedule. 🏃‍♂️",
-      "The committee calls that a ‘character-building experience.’",
+      "Yikes. That was rough. Take the L, hit the lab, come back meaner. 💪",
+      "That was a character-building ass kicking.",
+      "That loss smelled like pure pain and bad decisions.",
+      "Tough scene. At least it wasn’t on national TV… oh wait, it’s in this Discord forever.",
     ];
     await msg.reply(lines[Math.floor(Math.random() * lines.length)]);
     return;
@@ -283,10 +419,85 @@ client.on(Events.MessageCreate, async (msg) => {
     )
   ) {
     const lines = [
-      "League sources confirm: he is now ‘week-to-week’ with pride issues. 📉",
-      "Rumor: he’s entered the transfer portal to the Sun Belt. 👀",
-      "Analysts grading that performance: D– with upside if he finds the end zone someday.",
-      "Scouts say his controller might be eligible for early retirement.",
+      "Nick fumbled the bag again. Sources say he’s day-to-day with bruised ego. 📉",
+      "Nick’s playbook is just four verts and panic. Didn’t work, did it?",
+      "That performance was straight-up trash. Cut the tape and start over.",
+      "Nick playing like he’s trying to get fired from his own dynasty.",
+    ];
+    await msg.reply(lines[Math.floor(Math.random() * lines.length)]);
+    return;
+  }
+
+  // Direct shots at Nick
+  if (
+    [
+      "nick sucks",
+      "nick is trash",
+      "nick is bad",
+      "nick is ass",
+      "nick can't play",
+      "nick cant play",
+    ].some((p) => content.includes(p))
+  ) {
+    const lines = [
+      "Committee unanimously agrees: Nick is not him.",
+      "Nick is putting up CPU-on-rookie numbers and still losing. Impressive in a bad way.",
+      "Scouts have removed Nick from all serious consideration.",
+      "If choking was a stat, Nick would lead the nation.",
+    ];
+    await msg.reply(lines[Math.floor(Math.random() * lines.length)]);
+    return;
+  }
+
+  // Rage / controller / lag / cheese / refs
+  if (
+    content.includes("rage quit") ||
+    content.includes("ragequit") ||
+    content.includes("quit out")
+  ) {
+    const lines = [
+      "Rage quit detected. Mental toughness rating just dropped 10 points.",
+      "That quit button got absolutely SMASHED. 💥",
+    ];
+    await msg.reply(lines[Math.floor(Math.random() * lines.length)]);
+    return;
+  }
+
+  if (
+    content.includes("controller") ||
+    content.includes("batteries") ||
+    content.includes("stick drift")
+  ) {
+    const lines = [
+      "Controller officially on the injury report as ‘probable’.",
+      "Sounds like the controller played better than the user, tbh.",
+    ];
+    await msg.reply(lines[Math.floor(Math.random() * lines.length)]);
+    return;
+  }
+
+  if (content.includes("lag") || content.includes("delay")) {
+    const lines = [
+      "Lag johns detected. Skill issue or WiFi issue? The world may never know.",
+      "Blaming lag is valid exactly once per season. You might’ve used your free pass.",
+    ];
+    await msg.reply(lines[Math.floor(Math.random() * lines.length)]);
+    return;
+  }
+
+  if (content.includes("refs") || content.includes("referees") || content.includes("cheated")) {
+    const lines = [
+      "League office reviewed the call. Ruling: you still sold.",
+      "Refs caught strays but the film says you were getting cooked anyway.",
+    ];
+    await msg.reply(lines[Math.floor(Math.random() * lines.length)]);
+    return;
+  }
+
+  if (content.includes("cheese") || content.includes("cheesing")) {
+    const lines = [
+      "Cheese detected. Defensive coordinator drawing up anti-BS plays as we speak.",
+      "If you’re gonna cheese, at least win. Losing AND cheesing is crazy.",
     ];
     await msg.reply(lines[Math.floor(Math.random() * lines.length)]);
     return;
@@ -299,9 +510,9 @@ client.on(Events.MessageCreate, async (msg) => {
     )
   ) {
     const lines = [
-      "Energy feels like a College GameDay broadcast. 🎙️",
-      "Commissioner has been notified: stakes officially raised.",
-      "This one goes straight into the rivalry lore book.",
+      "Vibes feel like a primetime ESPN game. 🎙️",
+      "Commissioner has marked this as a must-watch matchup.",
+      "This one’s going straight into dynasty lore.",
     ];
     await msg.reply(lines[Math.floor(Math.random() * lines.length)]);
     return;
@@ -309,19 +520,27 @@ client.on(Events.MessageCreate, async (msg) => {
 
   // Team / rivalry flavor
   if (content.includes("akron on top")) {
-    await msg.reply("As destiny intended. 🔵🏈");
+    await msg.reply("As destiny f***ing intended. 🔵🏈");
     return;
   }
-  if (content.includes("go akron") || content.includes("zips")) {
-    await msg.reply("Akron boosters are smiling. 📣");
+
+  if (mentionsAkron) {
+    const lines = [
+      "Akron: certified main character energy.",
+      "Zips are the program everybody loves or loves to hate.",
+      "Akron boosters are locked in. Expectations are sky high.",
+    ];
+    await msg.reply(lines[Math.floor(Math.random() * lines.length)]);
     return;
   }
-  if (content.includes("go kent") || content.includes("golden flashes")) {
-    await msg.reply("Kent State trying to flip the Wagon Wheel script. ⚡");
-    return;
-  }
-  if (content.includes("kent state") && content.includes("upset")) {
-    await msg.reply("Vegas did NOT have that on the board. 💰");
+
+  if (mentionsKent) {
+    const lines = [
+      "Kent State staying in their usual spot: chaos and pain.",
+      "Golden Flashes? More like Golden Flashes-of-mediocrity.",
+      "Every time Kent gets praised, Akron fans die a little inside.",
+    ];
+    await msg.reply(lines[Math.floor(Math.random() * lines.length)]);
     return;
   }
 
@@ -332,38 +551,42 @@ client.on(Events.MessageCreate, async (msg) => {
     content.includes("commit")
   ) {
     const lines = [
-      "Recruiting board just lit up. 📊",
-      "Another name on the big board. NIL bag allegedly delivered. 💼",
-      "Stars don’t guarantee wins, but they do make the graphics look nicer.",
-      "Scouts are updating their spreadsheets as we speak.",
+      "Recruiting board just lit the hell up. 📊",
+      "Another kid on the big board. NIL whispers getting louder.",
+      "Stars don’t guarantee wins, but they do make the graphics look sexy.",
+      "Scouts are updating their spreadsheets and talking their shit.",
     ];
     await msg.reply(lines[Math.floor(Math.random() * lines.length)]);
     return;
   }
   if (content.includes("5 star") || content.includes("five star")) {
-    await msg.reply("Five-star alert 🚨 – expectations just went through the roof.");
+    await msg.reply(
+      "Five-star alert 🚨 — pressure just went way up. No more excuses with that kind of talent.",
+    );
     return;
   }
   if (content.includes("4 star") || content.includes("four star")) {
-    await msg.reply("Rock-solid four-star. Future starter written all over it. 📈");
+    await msg.reply(
+      "Rock-solid four-star. Future starter written all over that dude. 📈",
+    );
     return;
   }
 
   // Standings / scores
   if (content.includes("standings")) {
     const lines = [
-      "Polls are live. Some egos may not survive the refresh.",
-      "The standings don’t lie, but they can definitely hurt feelings. 📉",
-      "Power rankings committee is watching closely.",
+      "Polls are live. Feelings WILL be hurt.",
+      "The standings don’t lie, but they absolutely talk shit.",
+      "Power rankings committee is sharpening their knives.",
     ];
     await msg.reply(lines[Math.floor(Math.random() * lines.length)]);
     return;
   }
   if (content.includes("score") || content.includes("final was")) {
     const lines = [
-      "Score reported. Historians have logged the result. 📜",
-      "Box score updated. Narrative officially changed.",
-      "Another chapter written in this extremely unserious but very real rivalry.",
+      "Score reported. History books updated. Someone’s night is ruined.",
+      "Box score updated. Agenda pieces are being prepared.",
+      "Another chapter in this unserious, very real rivalry has been written.",
     ];
     await msg.reply(lines[Math.floor(Math.random() * lines.length)]);
     return;
@@ -378,15 +601,21 @@ client.on(Events.InteractionCreate, async (interaction) => {
   const i = interaction as ChatInputCommandInteraction;
 
   if (i.commandName === "final") {
-    const homeTeam = normalizeTeam(i.options.getString("home_team", true));
-    const awayTeam = normalizeTeam(i.options.getString("away_team", true));
+    const homeTeamRaw = i.options.getString("home_team", true);
+    const awayTeamRaw = i.options.getString("away_team", true);
+    const homeTeam = normalizeTeam(homeTeamRaw);
+    const awayTeam = normalizeTeam(awayTeamRaw);
     const homeScore = i.options.getInteger("home_score", true);
     const awayScore = i.options.getInteger("away_score", true);
 
     if (homeScore === awayScore) {
-      await i.reply("No ties in this dynasty. OT that thing and report again. 😤");
+      await i.reply("No ties in this dynasty. OT that shit and report again. 😤");
       return;
     }
+
+    // Grab pre-game stats for upset detection
+    const prevHome = teams[homeTeam];
+    const prevAway = teams[awayTeam];
 
     let winner = homeTeam;
     let loser = awayTeam;
@@ -400,16 +629,74 @@ client.on(Events.InteractionCreate, async (interaction) => {
       lScore = homeScore;
     }
 
+    const gameType = classifyGame(
+      winner,
+      loser,
+      wScore,
+      lScore,
+      winner === homeTeam ? prevHome : prevAway,
+      winner === homeTeam ? prevAway : prevHome,
+    );
+
     updateStandings(winner, loser, wScore, lScore);
     updateRivalry(winner, loser);
 
-    const recap = makeRecap(winner, loser, wScore, lScore);
-    await i.reply(recap);
+    const embed = new EmbedBuilder()
+      .setTitle("FINAL")
+      .setColor(getTeamColor(winner))
+      .setDescription(`**${winner} ${wScore} – ${loser} ${lScore}**`)
+      .addFields(
+        {
+          name: "Game Type",
+          value: gameType,
+          inline: true,
+        },
+        {
+          name: "Winner Record",
+          value: `${teams[winner].wins}-${teams[winner].losses}`,
+          inline: true,
+        },
+        {
+          name: "Loser Record",
+          value: `${teams[loser].wins}-${teams[loser].losses}`,
+          inline: true,
+        },
+      );
+
+    const wStreak = streaks[winner] ?? 0;
+    const lStreak = streaks[loser] ?? 0;
+    let streakLine = "";
+
+    if (wStreak >= 2) {
+      streakLine += `🔥 **${winner}** on a **${wStreak}-game win streak**.\n`;
+    }
+    if (lStreak <= -2) {
+      streakLine += `💀 **${loser}** on a **${Math.abs(lStreak)}-game losing streak**.\n`;
+    }
+    if (streakLine) {
+      embed.addFields({
+        name: "Streaks",
+        value: streakLine,
+      });
+    }
+
+    const subtitle = makeSavageSubtitle(gameType, winner, loser, wScore, lScore);
+    embed.addFields({
+      name: "Recap",
+      value: subtitle,
+    });
+
+    const logo = getTeamLogo(winner);
+    if (logo) {
+      embed.setThumbnail(logo);
+    }
+
+    await i.reply({ embeds: [embed] });
   }
 
   if (i.commandName === "standings") {
-    const text = formatStandings();
-    await i.reply(text);
+    const embed = formatStandingsEmbed();
+    await i.reply({ embeds: [embed] });
   }
 
   if (i.commandName === "rivalry") {
@@ -417,21 +704,29 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const ks = rivalry.kentWins;
     const total = ak + ks;
 
+    const embed = new EmbedBuilder()
+      .setTitle("Akron vs Kent State – Wagon Wheel War")
+      .setColor("#F4511E");
+
     if (total === 0) {
-      await i.reply(
-        "**AKRON VS KENT STATE RIVALRY**\nNo games reported yet. Someone fire up a kickoff.",
+      embed.setDescription(
+        "No rivalry games reported yet. Somebody boot up the matchup already.",
       );
-      return;
+    } else {
+      let leader: string;
+      if (ak > ks) leader = "Akron running the show right now. 🔵";
+      else if (ks > ak) leader = "Kent State has the edge. Akron fans are coping. 💛";
+      else leader = "All tied up. Maximum tension unlocked.";
+
+      embed.setDescription(
+        `Akron wins: **${ak}**\nKent State wins: **${ks}**\n\n${leader}`,
+      );
     }
 
-    let leader: string;
-    if (ak > ks) leader = "Akron leads the Wagon Wheel war. 🔵";
-    else if (ks > ak) leader = "Kent State holds the edge in the Wagon Wheel showdown. 💛";
-    else leader = "All square — tension rising.";
+    const akLogo = getTeamLogo("Akron");
+    if (akLogo) embed.setThumbnail(akLogo);
 
-    await i.reply(
-      `**AKRON VS KENT STATE RIVALRY**\nAkron wins: **${ak}**\nKent State wins: **${ks}**\n\n${leader}`,
-    );
+    await i.reply({ embeds: [embed] });
   }
 
   if (i.commandName === "recruit") {
@@ -452,25 +747,40 @@ client.on(Events.InteractionCreate, async (interaction) => {
     };
     recruits.push(entry);
 
-    let msg: string;
+    const embed = new EmbedBuilder()
+      .setTitle("Recruiting Update")
+      .setColor(getTeamColor(team))
+      .addFields(
+        { name: "Team", value: team, inline: true },
+        { name: "Prospect", value: prospect, inline: true },
+        { name: "Stars", value: `${stars}★`, inline: true },
+        { name: "Position", value: entry.position, inline: true },
+        { name: "Status", value: status.toUpperCase(), inline: true },
+      );
+
     if (status === "commit") {
-      msg =
-        `**RECRUITING NEWS 📝**\n` +
-        `${team} lands a **${stars}★ ${entry.position} ${prospect}**.\n` +
-        `Scouts say this might shift the balance of power. 👀`;
+      embed.setDescription(
+        `**${team}** just locked in a **${stars}★ ${entry.position}**. That’s a big-ass pickup.`,
+      );
     } else if (status === "interest") {
-      msg =
-        `**RECRUITING RUMORS 🔍**\n` +
-        `${prospect} (**${stars}★ ${entry.position}**) is showing interest in **${team}**.\n` +
-        `Keep the visits and NIL pitches coming.`;
+      embed.setDescription(
+        `${prospect} is flirting with **${team}**. Time to spam visits and NIL.`,
+      );
     } else {
-      msg =
-        `**RECRUITING LOSS 🚫**\n` +
-        `${team} misses out on **${stars}★ ${entry.position} ${prospect}**.\n` +
-        `Time to hit the tape and find the next gem.`;
+      embed.setDescription(
+        `${team} whiffed on **${stars}★ ${entry.position} ${prospect}**. Time to find the next dog.`,
+      );
     }
 
-    await i.reply(msg);
+    const logo = getTeamLogo(team);
+    if (logo) embed.setThumbnail(logo);
+
+    await i.reply({ embeds: [embed] });
+  }
+
+  if (i.commandName === "streaks") {
+    const embed = formatStreaksEmbed();
+    await i.reply({ embeds: [embed] });
   }
 });
 
